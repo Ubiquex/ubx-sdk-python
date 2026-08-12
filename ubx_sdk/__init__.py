@@ -35,6 +35,7 @@ __all__ = [
     "resource",
     "secret",
     "cross",
+    "cross_stack",
     "intent",
     "override",
     "run",
@@ -155,8 +156,15 @@ def secret(backend: str, path: str) -> Any:
 
 @dataclasses.dataclass(frozen=True)
 class CrossMarker:
+    """A union of $cross's two mutually exclusive real wire shapes
+    (core/resolver/refs.go's own resolveCross accepts exactly one of
+    ledger_dir/stack, never both) -- ledger_dir stays field 1 (not
+    reordered) so cross()'s own existing positional CrossMarker(ledger_dir,
+    to) call is completely unaffected by stack's addition."""
+
     ledger_dir: str
     to: str
+    stack: str = ""
 
 
 def cross(ledger_dir: str, to: str) -> Any:
@@ -165,6 +173,18 @@ def cross(ledger_dir: str, to: str) -> Any:
     in v1 (docs/sdk.md's own "Out of scope" -- a typed cross-stack handle
     is real, useful, deferred future work)."""
     return CrossMarker(ledger_dir, to)
+
+
+def cross_stack(stack: str, to: str) -> Any:
+    """cross_stack(stack, to) builds the exact {"$cross": {"stack",
+    "to"}} marker (UBI-32 Arc B's own "resolve by NAME against the
+    base") -- the form UBI-134's own blueprint cross_ref params need: a
+    blueprint is built once and called from many different stacks/
+    environments, so a call-site "@<stack>.<type>.<name>" reference
+    (matching diagram/crossref.go's own "@" grammar for a reference
+    node's label) can only ever name a neighbor by stack, never by a
+    ledger_dir path the blueprint has no way to know at build time."""
+    return CrossMarker(ledger_dir="", to=to, stack=stack)
 
 
 # ---------------------------------------------------------------------
@@ -475,6 +495,8 @@ def _serialize_generic_or_marker(value: Any, address: str) -> tuple[bool, Any]:
     if isinstance(value, SecretMarker):
         return True, {"$secret": {"backend": value.backend, "path": value.path}}
     if isinstance(value, CrossMarker):
+        if value.stack:
+            return True, {"$cross": {"stack": value.stack, "to": value.to}}
         return True, {"$cross": {"ledger_dir": value.ledger_dir, "to": value.to}}
     if callable(value):
         raise TypeError(
