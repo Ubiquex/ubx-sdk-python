@@ -40,6 +40,21 @@ WIDGET = sdk.ResourceBinding(
 )
 
 
+@dataclasses.dataclass
+class DataWidgetLookup:
+    id: Any = None
+    name: Any = None
+
+
+DATA_WIDGET = sdk.DataSourceBinding(
+    wire_type="data_fake_widget",
+    fields={
+        "id": sdk.FieldSpec(wire_name="id"),
+        "name": sdk.FieldSpec(wire_name="name"),
+    },
+)
+
+
 class RuntimeTest(unittest.TestCase):
     def test_basic_resource_round_trip(self):
         def describe():
@@ -241,6 +256,74 @@ class RuntimeTest(unittest.TestCase):
     def test_pop_blueprint_source_with_no_matching_push_raises(self):
         with self.assertRaisesRegex(RuntimeError, "no matching push_blueprint_source"):
             sdk.pop_blueprint_source()
+
+    # --- data() -- mirrors the resource() tests above exactly (same
+    # duplicate-address check, same marker-aware serializer, same
+    # blueprint-provenance wiring) rather than a separate, narrower
+    # suite, since add_data_source's own doc comment states it reuses
+    # those same mechanisms unchanged.
+
+    def test_basic_data_source_round_trip(self):
+        def describe():
+            sdk.intent("a summary")
+            sdk.data(DATA_WIDGET, "widget-a", DataWidgetLookup(id="w-123"))
+
+        doc = sdk.stack("demo", describe).evaluate()
+        self.assertEqual(len(doc["data_sources"]), 1)
+        ds = doc["data_sources"][0]
+        self.assertEqual((ds["type"], ds["name"]), ("data_fake_widget", "widget-a"))
+        self.assertNotIn("op", ds)
+        self.assertEqual(ds["lookup"], {"id": "w-123"})
+        self.assertNotIn("name", ds["lookup"])
+
+    def test_data_source_result_feeds_resource_config(self):
+        def describe():
+            sdk.intent("s")
+            looked = sdk.data(DATA_WIDGET, "existing", DataWidgetLookup(id="w-123"))
+            sdk.resource(WIDGET, "b", WidgetConfig(owner=looked.name))
+
+        doc = sdk.stack("demo", describe).evaluate()
+        cfg = doc["resources"][0]["config"]
+        self.assertEqual(cfg["owner_ref"], {"$ref": {"to": "demo.data_fake_widget.existing.name"}})
+
+    def test_resource_computed_feeds_data_source_lookup(self):
+        def describe():
+            sdk.intent("s")
+            created = sdk.resource(WIDGET, "a", WidgetConfig(name="a"))
+            sdk.data(DATA_WIDGET, "lookup-created", DataWidgetLookup(id=created.id))
+
+        doc = sdk.stack("demo", describe).evaluate()
+        lookup = doc["data_sources"][0]["lookup"]
+        self.assertEqual(lookup["id"], {"$ref": {"to": "demo.fake_widget.a.id"}})
+
+    def test_duplicate_data_source_address_is_hard_failure(self):
+        def describe():
+            sdk.intent("s")
+            sdk.data(DATA_WIDGET, "a", DataWidgetLookup(id="1"))
+            sdk.data(DATA_WIDGET, "a", DataWidgetLookup(id="2"))
+
+        with self.assertRaisesRegex(RuntimeError, "duplicate data source"):
+            sdk.stack("demo", describe).evaluate()
+
+    def test_data_source_missing_name_is_hard_failure(self):
+        def describe():
+            sdk.intent("s")
+            sdk.data(DATA_WIDGET, "", DataWidgetLookup(id="1"))
+
+        with self.assertRaisesRegex(RuntimeError, "name is required"):
+            sdk.stack("demo", describe).evaluate()
+
+    def test_data_source_outside_stack_is_hard_failure(self):
+        with self.assertRaisesRegex(RuntimeError, "called outside of an active stack"):
+            sdk.data(DATA_WIDGET, "a", DataWidgetLookup(id="1"))
+
+    def test_no_data_sources_omits_field_entirely(self):
+        def describe():
+            sdk.intent("s")
+            sdk.resource(WIDGET, "a", WidgetConfig(name="a"))
+
+        doc = sdk.stack("demo", describe).evaluate()
+        self.assertNotIn("data_sources", doc)
 
 
 if __name__ == "__main__":
