@@ -29,10 +29,12 @@ __all__ = [
     "FieldSpec",
     "FieldMap",
     "ResourceBinding",
+    "DataSourceBinding",
     "IntentSource",
     "StackDefinition",
     "stack",
     "resource",
+    "data",
     "secret",
     "cross",
     "cross_stack",
@@ -224,6 +226,25 @@ class ResourceBinding:
     fields: "FieldMap"
 
 
+@dataclasses.dataclass(frozen=True)
+class DataSourceBinding:
+    """ResourceBinding's own real sibling for a data source -- structurally
+    identical (wire_type for data_sources[].type, fields for Lookup-
+    dataclass-field-name -> wire-name mapping, the same role fields plays
+    for a resource's own config), a distinct dataclass rather than a
+    reused ResourceBinding only so a codegen'd module can never pass a
+    resource's own binding to data() or vice versa by accident without at
+    least a type-checker (mypy/pyright) catching it -- Python itself has
+    no static enforcement either way, but the two staying structurally
+    identical and yet nominally distinct types keeps that door open
+    (docs/schema.md's own "Amendment: data sources" -- wire_type is
+    expected to already carry the real "data_"-prefixed convention that
+    section pins, this type does not prepend it itself)."""
+
+    wire_type: str
+    fields: "FieldMap"
+
+
 # ---------------------------------------------------------------------
 # intent/v1 document shape (docs/schema.md's own ubx:intent/v1) -- only
 # the fields this runtime actually populates.
@@ -252,6 +273,7 @@ class _Collector:
     def __init__(self, stack_name: str):
         self.stack_name = stack_name
         self.resources: list = []
+        self.data_sources: list = []
         self.overrides: list = []
         self.seen_addresses: set = set()
         self.intent_info: Optional[dict] = None
@@ -302,6 +324,39 @@ class _Collector:
 
         return Computed(address)
 
+    def add_data_source(self, binding: DataSourceBinding, name: str, lookup: Any) -> Computed:
+        """add_resource's own real sibling for data() -- same duplicate-
+        address check (the identical shared seen_addresses set, so a
+        resource and a data source can never collide with each other
+        either, though in practice they never do:
+        DataSourceBinding.wire_type always carries the real "data_"
+        prefix docs/schema.md's own amendment pins, so the two address
+        spaces never actually overlap), same blueprint-provenance
+        wiring, same _serialize_config walk (identical call, not a
+        reimplementation -- a lookup value gets the exact same
+        $ref/$secret/$cross marker recognition a resource's own config
+        already gets, docs/schema.md's own "data_sources[].lookup"
+        bullet). The one real difference from add_resource: no "op" key
+        on the built entry at all (this module's own "Amendment: data
+        sources" reference has why) and it appends to self.data_sources,
+        a separate list, never self.resources."""
+        if not name or not name.strip():
+            raise RuntimeError(f"data(): name is required (type {binding.wire_type}).")
+        address = f"{self.stack_name}.{binding.wire_type}.{name}"
+        if address in self.seen_addresses:
+            raise RuntimeError(
+                f'data(): duplicate data source {binding.wire_type} "{name}" in stack "{self.stack_name}".'
+            )
+        self.seen_addresses.add(address)
+
+        serialized = _serialize_config(binding.fields, lookup, address)
+        data_source = {"type": binding.wire_type, "name": name, "lookup": serialized}
+        if _blueprint_source_stack:
+            data_source["sources"] = [{"kind": "blueprint", "ref": _blueprint_source_stack[-1]}]
+        self.data_sources.append(data_source)
+
+        return Computed(address)
+
     def add_override(self, address: str, config: dict) -> None:
         if not address or not address.strip():
             raise RuntimeError("override(): address is required.")
@@ -323,6 +378,8 @@ class _Collector:
             "intent": self.intent_info,
             "resources": self.resources,
         }
+        if self.data_sources:
+            doc["data_sources"] = self.data_sources
         if self.overrides:
             doc["overrides"] = self.overrides
         return doc
@@ -374,6 +431,16 @@ def resource(binding: ResourceBinding, name: str, config: Any) -> Computed:
     way to express "modify" intent). Returns a Computed handle for wiring
     into sibling resources' own config."""
     return _require_collector("resource").add_resource(binding, name, config)
+
+
+def data(binding: DataSourceBinding, name: str, lookup: Any) -> Computed:
+    """data(binding, name, lookup) declares one data source -- a lookup,
+    never a create/modify (docs/schema.md's own "Amendment: data
+    sources"). Returns the identical Computed handle resource() returns,
+    on purpose: a data source's own result wires into a sibling
+    resource's config exactly the way another resource's own output
+    would, no separate reference type or API for a caller to learn."""
+    return _require_collector("data").add_data_source(binding, name, lookup)
 
 
 def intent(summary: str, sources: Optional[list] = None) -> None:
