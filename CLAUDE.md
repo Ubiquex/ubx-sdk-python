@@ -18,6 +18,10 @@ Coordinating repo: `github.com/ubiquex/ubiquex` (a change here can affect
 ## Git rules (strict)
 
 - PR-only. Never self-merge — push a branch, open a PR, wait for the founder.
+- Before pushing more commits to a branch with an open PR, confirm it is
+  STILL open (`gh pr list --state open` or `gh pr view <n>`) — a merged PR's
+  branch looks identical to any other from `git status` alone, and a push
+  after merge lands nowhere near `main`, silently.
 - NO AI attribution anywhere in commits or PR bodies.
 
 ## Publishing discipline
