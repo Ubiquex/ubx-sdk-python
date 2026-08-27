@@ -26,7 +26,12 @@ Coordinating repo: `github.com/ubiquex/ubiquex` (a change here can affect
   every `ubx-sdk-<provider>` repo's own Python bindings AND `ubx` itself
   (`go:embed` build input). Verify the real, separate published package
   directly (`pypi.org/project/ubx-sdk`) before claiming a fix is live — a
-  commit to this repo's own `main` is NOT the same as "published"
-  (`ubiquex`'s own CLAUDE.md rule 8; this exact class of mistake already
-  happened once, UBI-131, reported "published" when only the monorepo's own
-  copy had changed).
+  commit to this repo's own `main` is NOT the same as "published". Never
+  infer "published" from a commit to the monorepo's own copy alone
+  (`ubiquex`'s own CLAUDE.md rule 8). This exact class of mistake already
+  happened once, to this repo's own real Go sibling (`ubx-sdk-go`, UBI-131):
+  a Go fix was reported "committed and pushed" across multiple session
+  summaries, but only the monorepo's own copy had changed — the separate,
+  real repo was never touched, still showing its original scaffold commit a
+  full day later, caught only when the founder pushed back and a real
+  `git log` was run against the actual separate repo, not the monorepo.
