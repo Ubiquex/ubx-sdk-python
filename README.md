@@ -15,6 +15,22 @@ UBI-138) -- a program built against it does `import ubx_sdk as ubx` and
 calls `ubx.resource(...)`, `ubx.stack(...)`, `ubx.run(...)` against the
 binding's own generated `ResourceBinding`/`Config` types.
 
+## What it contains
+
+- `ubx_sdk/__init__.py`: the real runtime, `resource`, `stack`, `run`
+- `embed.go`: the real `go:embed` bridge `ubiquex` uses to compile this
+  file directly into the `ubx` binary
+
+## Install
+
+```
+pip install ubx-sdk
+```
+
+Independent convenience for editor/IDE type-checking. Not required for
+evaluation to work, `ubx`'s own hermetic WASI evaluator embeds this
+repo directly and never consults a real `pip install`.
+
 ## Two real roles, one source (UBI-139)
 
 This repo is the canonical source for both:
@@ -38,3 +54,11 @@ See [docs.ubiquex.io](https://docs.ubiquex.io) for the full SDK guide.
 ## License
 
 Apache-2.0
+
+<!-- README-GEN:BEGIN -->
+## Links
+
+- Docs: https://docs.ubiquex.io
+- Internals (architecture and design): https://github.com/Ubiquex/ubiquex-internals
+- Linear board: https://linear.app/ubiquex
+<!-- README-GEN:END -->
