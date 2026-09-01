@@ -1,0 +1,146 @@
+name: publish
+
+# Manual-trigger only, matching every ubx-sdk-* repo's own publish.yml
+# convention (UBI-135): someone clicks "Run workflow" here to actually
+# publish; the workflow still computes the correct version decision
+# automatically -- the human step is a confirmation click, not a manual
+# version decision.
+#
+# UBI-225: the version-bump step opens a PR rather than pushing to main
+# directly -- main is branch-protected (UBI-216) in this repo like every
+# other repo this org coordinates, so a direct push always fails with
+# GH006. Real registries are the source of truth regardless: this step
+# runs LAST, after PyPI already has the real content, so a human merging
+# the bump PR late costs nothing but a brief window where PyPI is ahead
+# of what main claims, never the other way around. Never self-merged.
+#
+# Single-file, single-registry, no per-language exports map and no
+# npm/Go leg -- unlike the per-provider repos, this package has no
+# TypeScript or Go counterpart of its own (those are separate runtimes:
+# github.com/Ubiquex/ubx-sdk-go, github.com/Ubiquex/ubx-sdk-typescript).
+#
+# Requires a PYPI_TOKEN repo secret (Settings -> Secrets and variables
+# -> Actions).
+
+on:
+  workflow_dispatch: {}
+
+permissions:
+  contents: write
+  pull-requests: write
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out ubx-sdk-python
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          ref: main
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Determine version to publish
+        id: bump
+        run: |
+          set -euo pipefail
+          committed="$(python3 -c "import tomllib; print(tomllib.load(open('pyproject.toml','rb'))['project']['version'])")"
+
+          # Real, live PyPI state -- never trust the committed version
+          # alone.
+          live_pypi="$(curl -sf https://pypi.org/pypi/ubx-sdk/json | python3 -c "import json,sys; d=json.load(sys.stdin); print(d.get('info',{}).get('version') or '')" || echo "")"
+          echo "committed=$committed, live pypi=${live_pypi:-<none>}"
+
+          if [ -z "$live_pypi" ]; then
+            new_version="$committed"
+            echo "no live pypi entry yet -- publishing committed version ($committed) as-is"
+          elif [ "$committed" != "$live_pypi" ] && [ "$(printf '%s\n%s\n' "$committed" "$live_pypi" | sort -V | tail -1)" = "$committed" ]; then
+            new_version="$committed"
+            echo "committed version ($committed) already ahead of live ($live_pypi) -- publishing as-is"
+          else
+            # Routine bump off an existing real release -- PATCH only;
+            # a MINOR/major bump stays a deliberate, committed decision
+            # made by hand in pyproject.toml before running this.
+            IFS='.' read -r major minor patch <<< "$live_pypi"
+            new_version="${major}.${minor}.$((patch + 1))"
+            echo "live=$live_pypi -> $new_version"
+          fi
+          echo "new_version=$new_version" >> "$GITHUB_OUTPUT"
+
+      - name: Bump version in pyproject.toml
+        run: |
+          set -euo pipefail
+          v="${{ steps.bump.outputs.new_version }}"
+          python3 -c "
+          import re
+          content = open('pyproject.toml').read()
+          content = re.sub(r'(?m)^version = \".*\"\$', 'version = \"$v\"', content, count=1)
+          open('pyproject.toml', 'w').write(content)
+          "
+
+      - name: Build
+        run: |
+          set -euo pipefail
+          python3 -m pip install build
+          python3 -m build
+
+      - name: Publish to PyPI
+        env:
+          TWINE_USERNAME: __token__
+          TWINE_PASSWORD: ${{ secrets.PYPI_TOKEN }}
+        run: |
+          set -euo pipefail
+          python3 -m pip install twine
+          twine upload dist/*
+
+      - name: Open a PR for the version bump
+        # Deliberately runs LAST, after PyPI has already succeeded --
+        # same discipline as every ubx-sdk-<provider> repo's own
+        # publish.yml (UBI-143): a failed publish must never leave main
+        # claiming a version that does not exist on the registry.
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          if git diff --quiet -- pyproject.toml; then
+            echo "already at ${{ steps.bump.outputs.new_version }} -- nothing to commit"
+          else
+            v="${{ steps.bump.outputs.new_version }}"
+            branch="version-bump/v$v"
+            git config user.name "ubx-bot"
+            git config user.email "actions@users.noreply.github.com"
+            git checkout -b "$branch"
+            git add pyproject.toml
+            git commit -m "runtime: bump ubx-sdk to v$v"
+            git push origin "$branch"
+            gh pr create --title "runtime: bump ubx-sdk to v$v" \
+              --body "PyPI already has v$v (this workflow only opens this PR after the real publish above succeeds). Merging this brings main's own committed pyproject.toml in line with what is already published." \
+              --base main --head "$branch"
+          fi
+
+      - name: Verify PyPI agrees
+        # Queries the SPECIFIC version, never the bare project endpoint,
+        # which reports whatever the latest release happens to be --
+        # not necessarily this run's own version if two publishes ever
+        # raced.
+        run: |
+          set -euo pipefail
+          v="${{ steps.bump.outputs.new_version }}"
+          live_pypi=""
+          for attempt in $(seq 1 10); do
+            live_pypi="$(curl -sf "https://pypi.org/pypi/ubx-sdk/$v/json" | python3 -c "import json,sys; print(json.load(sys.stdin).get('info',{}).get('version') or '')" || echo "")"
+            if [ "$live_pypi" = "$v" ]; then
+              break
+            fi
+            echo "attempt $attempt: pypi=${live_pypi:-<none>}, expected $v -- retrying in 10s"
+            sleep 10
+          done
+          echo "final: pypi=${live_pypi:-<none>}, expected $v"
+          if [ "$live_pypi" != "$v" ]; then
+            echo "pypi does not yet show $v -- investigate directly rather than re-running blindly" >&2
+            exit 1
+          fi
+          echo "pypi agrees at $v"
