@@ -257,6 +257,40 @@ class RuntimeTest(unittest.TestCase):
         with self.assertRaisesRegex(RuntimeError, "no matching push_blueprint_source"):
             sdk.pop_blueprint_source()
 
+    # --- blueprint_name on the binding itself (UBI-225) ---
+
+    def test_resource_against_blueprint_named_binding_stamps_provenance_with_no_open_scope(self):
+        blueprint_widget = dataclasses.replace(WIDGET, blueprint_name="ci-platform")
+
+        def describe():
+            sdk.intent("s")
+            sdk.resource(blueprint_widget, "bypass", WidgetConfig(name="x"))
+
+        doc = sdk.stack("platform", describe).evaluate()
+        self.assertEqual(doc["resources"][0]["sources"], [{"kind": "blueprint", "ref": "ci-platform"}])
+
+    def test_resource_against_ordinary_binding_still_has_no_sources(self):
+        def describe():
+            sdk.intent("s")
+            sdk.resource(WIDGET, "primary", WidgetConfig(name="x"))
+
+        doc = sdk.stack("platform", describe).evaluate()
+        self.assertNotIn("sources", doc["resources"][0])
+
+    def test_open_scope_wins_over_binding_blueprint_name(self):
+        blueprint_widget = dataclasses.replace(WIDGET, blueprint_name="ci-platform")
+
+        def describe():
+            sdk.intent("s")
+            sdk.push_blueprint_source("outer-blueprint")
+            try:
+                sdk.resource(blueprint_widget, "nested", WidgetConfig(name="x"))
+            finally:
+                sdk.pop_blueprint_source()
+
+        doc = sdk.stack("platform", describe).evaluate()
+        self.assertEqual(doc["resources"][0]["sources"], [{"kind": "blueprint", "ref": "outer-blueprint"}])
+
     # --- data() -- mirrors the resource() tests above exactly (same
     # duplicate-address check, same marker-aware serializer, same
     # blueprint-provenance wiring) rather than a separate, narrower
