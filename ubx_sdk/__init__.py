@@ -220,10 +220,26 @@ FieldMap = dict  # dict[str, FieldSpec]
 class ResourceBinding:
     """What a codegen'd module exports per resource type -- wire_type for
     resources[].type, fields for Config-field-name -> wire-name mapping
-    at evaluation time."""
+    at evaluation time.
+
+    blueprint_name (UBI-225) is "" for an ordinary provider SDK binding
+    (sdk/codegen/templates/py never sets it) -- set only by a
+    blueprint's own generated bindings.py (blueprint/pygen.go's own
+    renderPyBindings), to that blueprint's own bare declared name, the
+    SAME value its generated wrapper function passes to
+    push_blueprint_source. This is provenance carried on the binding
+    itself, not just on the call scope: before this field existed, a
+    resource built by calling resource(some_blueprint_binding, name,
+    some_config) directly -- importing a blueprint's own exported
+    binding/config and constructing the resource by hand, never calling
+    the blueprint's own wrapper function at all -- got zero provenance,
+    indistinguishable from an ordinary hand-written resource.
+    add_resource below checks this field as a fallback exactly when
+    _blueprint_source_stack is empty."""
 
     wire_type: str
     fields: "FieldMap"
+    blueprint_name: str = ""
 
 
 @dataclasses.dataclass(frozen=True)
@@ -303,23 +319,19 @@ class _Collector:
 
         serialized = _serialize_config(binding.fields, config, address)
         resource = {"type": binding.wire_type, "name": name, "op": "create", "config": serialized}
-        if _blueprint_source_stack:
-            # UBI-126: this resource() call is executing from inside a
-            # compiled blueprint's own generated function body
-            # (push_blueprint_source, below, called only by `ubx blueprint
-            # build`'s own generated code -- never by a stack author
-            # directly). The innermost (most recently pushed) scope wins,
-            # matching ordinary lexical-scoping intuition. ref is
-            # deliberately the blueprint's own bare declared name here, NOT
-            # yet "name:content_hash" -- this WASI-sandboxed evaluator has
-            # no way to compute a real content hash for itself (see
-            # push_blueprint_source's own doc comment) -- ubx resolve's own
-            # external completion step (blueprint.EvaluatePythonWithDeps,
-            # reusing UBI-130's own already-resolved requirements.txt
-            # dependency hashes rather than a second discovery mechanism)
-            # resolves the bare name to a real content hash afterward,
-            # mirroring sdk/go/runtime's own identical mechanism.
-            resource["sources"] = [{"kind": "blueprint", "ref": _blueprint_source_stack[-1]}]
+        # UBI-126/UBI-225: ref is deliberately the blueprint's own bare
+        # declared name here, NOT yet "name:content_hash" -- this
+        # WASI-sandboxed evaluator has no way to compute a real content
+        # hash for itself (see push_blueprint_source's own doc comment)
+        # -- ubx resolve's own external completion step
+        # (blueprint.EvaluatePythonWithDeps, reusing UBI-130's own
+        # already-resolved requirements.txt dependency hashes rather
+        # than a second discovery mechanism) resolves the bare name to a
+        # real content hash afterward, mirroring sdk/go/runtime's own
+        # identical mechanism.
+        blueprint_source = _current_blueprint_source(binding)
+        if blueprint_source:
+            resource["sources"] = [{"kind": "blueprint", "ref": blueprint_source}]
         self.resources.append(resource)
 
         return Computed(address)
@@ -478,12 +490,33 @@ def override(address: str, config: dict) -> None:
 # function (blueprint/pygen.go's own renderPyFunction) wraps its entire
 # body in, using the blueprint's own bare, unsanitized declared name. A
 # plain stack that never imports a blueprint never pushes anything, so
-# this stack stays empty and a resource's own "sources" stays unset --
-# zero wire-format change for the overwhelming majority of ordinary SDK
-# programs.
+# this stack stays empty and a resource's own "sources" stays unset
+# unless the binding itself carries a blueprint_name
+# (_current_blueprint_source below) -- zero wire-format change for the
+# overwhelming majority of ordinary SDK programs.
 # ---------------------------------------------------------------------
 
 _blueprint_source_stack: list = []
+
+
+def _current_blueprint_source(binding: ResourceBinding) -> str:
+    """_current_blueprint_source (UBI-225) is what add_resource actually
+    checks: the innermost active push_blueprint_source scope if one is
+    open, or -- exactly when it isn't -- the binding's own carried
+    blueprint_name. In every case `ubx blueprint build`'s own generated
+    code produces, the two never disagree: a wrapper function's own
+    resource() calls run against that SAME blueprint's own bindings,
+    both stamped with the identical name by the same codegen run, so
+    which one wins is only ever load-bearing for the one case this field
+    exists to fix -- a binding used OUTSIDE any open scope at all (no
+    wrapper function call), where the scope check alone would find
+    nothing and the binding is the only signal left. Returns "" (no
+    provenance) for an ordinary resource: no open scope, and a binding
+    with no blueprint_name -- the overwhelming common case, completely
+    unaffected."""
+    if _blueprint_source_stack:
+        return _blueprint_source_stack[-1]
+    return binding.blueprint_name
 
 
 def push_blueprint_source(name: str) -> None:
