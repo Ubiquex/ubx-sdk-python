@@ -362,3 +362,33 @@ class RuntimeTest(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class MarkerTypesExported(unittest.TestCase):
+    """The marker types must be importable so a hand-written blueprint
+    can DECLARE a parameter as one.
+
+    cross()/secret() return Any for call-site convenience, which erases
+    the type exactly where a param declaration needs it: a param
+    annotated Any is indistinguishable from an untyped one, so a schema
+    derived from the signature cannot tell a cross-stack reference from
+    a plain string. Go already had this (sdk.CrossMarker is a real
+    exported type); this brings Python level.
+    """
+
+    def test_exported_in_all(self):
+        self.assertIn("CrossMarker", sdk.__all__)
+        self.assertIn("SecretMarker", sdk.__all__)
+
+    def test_a_param_can_be_annotated_as_a_marker(self):
+        def blueprint(vpc_id: sdk.CrossMarker, token: sdk.SecretMarker) -> None:
+            pass
+
+        hints = blueprint.__annotations__
+        self.assertIs(hints["vpc_id"], sdk.CrossMarker)
+        self.assertIs(hints["token"], sdk.SecretMarker)
+
+    def test_cross_still_returns_a_usable_marker(self):
+        m = sdk.cross("../network", "network.aws_vpc.main.id")
+        self.assertIsInstance(m, sdk.CrossMarker)
+        self.assertEqual(m.ledger_dir, "../network")

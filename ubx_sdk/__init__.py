@@ -26,6 +26,15 @@ from typing import Any, Callable, Optional
 __all__ = [
     "Computed",
     "ComputedCoercionError",
+    # The marker types are exported so a hand-written blueprint can DECLARE
+    # a parameter as one. cross()/secret() return Any for call-site
+    # convenience, which erases the type exactly where a param declaration
+    # needs it: `vpc_id: Any` is indistinguishable from an untyped param,
+    # so a schema derived from the signature cannot tell a cross-stack
+    # reference from a string. Go already had this (sdk.CrossMarker is a
+    # real exported type); this brings Python level.
+    "CrossMarker",
+    "SecretMarker",
     "FieldSpec",
     "FieldMap",
     "ResourceBinding",
