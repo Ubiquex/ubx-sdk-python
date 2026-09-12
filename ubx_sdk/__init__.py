@@ -42,6 +42,7 @@ __all__ = [
     "IntentSource",
     "StackDefinition",
     "stack",
+    "blueprint_outputs",
     "resource",
     "data",
     "secret",
@@ -300,6 +301,9 @@ class _Collector:
         self.resources: list = []
         self.data_sources: list = []
         self.overrides: list = []
+        # blueprint_outputs is output name -> resolved address (UBI-261).
+        # Empty for every program that is not a blueprint caller.
+        self.blueprint_outputs: dict = {}
         self.seen_addresses: set = set()
         self.intent_info: Optional[dict] = None
 
@@ -403,6 +407,8 @@ class _Collector:
             doc["data_sources"] = self.data_sources
         if self.overrides:
             doc["overrides"] = self.overrides
+        if self.blueprint_outputs:
+            doc["blueprint_outputs"] = self.blueprint_outputs
         return doc
 
 
@@ -526,6 +532,37 @@ def _current_blueprint_source(binding: ResourceBinding) -> str:
     if _blueprint_source_stack:
         return _blueprint_source_stack[-1]
     return binding.blueprint_name
+
+
+def blueprint_outputs(outputs: dict) -> None:
+    """Record what a called blueprint returned, so the caller of that
+    blueprint can reference its outputs (UBI-261).
+
+    This exists because the address a blueprint's output refers to is
+    knowable only while the blueprint RUNS. An Ubxfile declared each
+    output as a literal "<resource-slug>.<attribute>" pair, which could
+    be read without running anything; a blueprint that is code returns a
+    Computed, and which attribute of which resource that points at can
+    depend on the blueprint's own branching. So it is reported from
+    inside the evaluation rather than derived from outside it.
+
+    Called by the synthesized caller program ubx writes to invoke a
+    blueprint, never by a person. A None entry is skipped rather than
+    recorded as an empty address: a blueprint may legitimately return no
+    value for a declared output, and the caller reports that as its own
+    named error, where it can say which output and which blueprint.
+    Calling it twice merges, last write winning per key.
+    """
+    collector = _require_collector("blueprint_outputs")
+    for name, value in outputs.items():
+        if value is None:
+            continue
+        if not isinstance(value, Computed):
+            raise TypeError(
+                f'blueprint_outputs(): "{name}" is {type(value).__name__}, not a Computed -- '
+                "every blueprint output is a reference to a resource attribute."
+            )
+        collector.blueprint_outputs[name] = value.address
 
 
 def push_blueprint_source(name: str) -> None:
