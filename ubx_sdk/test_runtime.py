@@ -392,3 +392,60 @@ class MarkerTypesExported(unittest.TestCase):
         m = sdk.cross("../network", "network.aws_vpc.main.id")
         self.assertIsInstance(m, sdk.CrossMarker)
         self.assertEqual(m.ledger_dir, "../network")
+
+
+
+# UBI-261: a blueprint caller reports what the blueprint returned,
+# because the address an output refers to is knowable only while the
+# blueprint runs.
+class BlueprintOutputsTest(unittest.TestCase):
+    def _widget_stack(self, body):
+        def describe():
+            sdk.intent("call a blueprint")
+            widget = sdk.resource(WIDGET, "orders", WidgetConfig(name="orders"))
+            body(widget)
+
+        return sdk.stack("payments", describe).evaluate()
+
+    def test_recorded_on_the_document(self):
+        doc = self._widget_stack(
+            lambda w: sdk.blueprint_outputs({"queue_url": w.url, "queue_arn": w.arn})
+        )
+        self.assertEqual(
+            doc["blueprint_outputs"],
+            {
+                "queue_url": "payments.fake_widget.orders.url",
+                "queue_arn": "payments.fake_widget.orders.arn",
+            },
+        )
+
+    def test_omitted_when_never_called(self):
+        doc = self._widget_stack(lambda w: None)
+        self.assertNotIn("blueprint_outputs", doc)
+
+    def test_none_is_skipped(self):
+        # A blueprint may legitimately return no value for a declared
+        # output. Skipping it lets the caller report that as its own
+        # named error, where it can say which output and which
+        # blueprint; an empty address here would instead look resolved.
+        doc = self._widget_stack(
+            lambda w: sdk.blueprint_outputs({"queue_url": w.url, "missing": None})
+        )
+        self.assertEqual(
+            doc["blueprint_outputs"],
+            {"queue_url": "payments.fake_widget.orders.url"},
+        )
+
+    def test_merges_across_calls(self):
+        def body(w):
+            sdk.blueprint_outputs({"first": w.url})
+            sdk.blueprint_outputs({"second": w.arn})
+
+        doc = self._widget_stack(body)
+        self.assertEqual(len(doc["blueprint_outputs"]), 2)
+
+    def test_refuses_a_non_computed(self):
+        with self.assertRaisesRegex(TypeError, "not a Computed"):
+            self._widget_stack(
+                lambda w: sdk.blueprint_outputs({"queue_url": "a string"})
+            )
